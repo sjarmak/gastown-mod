@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/steveyegge/gastown/internal/llm"
 )
 
 var (
@@ -695,23 +697,25 @@ func LoadOrCreateMessagingConfig(path string) (*MessagingConfig, error) {
 // Falls back to defaults if settings don't exist or don't specify runtime config.
 // rigPath should be the path to the rig directory (e.g., ~/gt/gastown).
 func LoadRuntimeConfig(rigPath string) *RuntimeConfig {
-	settingsPath := filepath.Join(rigPath, "settings", "config.json")
-	settings, err := LoadRigSettings(settingsPath)
-	if err != nil {
-		return DefaultRuntimeConfig()
+	return loadRuntimeConfigForRole(rigPath, "")
+}
+
+func loadRuntimeConfigForRole(rigPath, role string) *RuntimeConfig {
+	base := &RuntimeConfig{}
+	if rigPath != "" {
+		settingsPath := filepath.Join(rigPath, "settings", "config.json")
+		if settings, err := LoadRigSettings(settingsPath); err == nil {
+			if settings.Runtime != nil {
+				base = mergeRuntimeConfigs(base, settings.Runtime)
+			}
+			if role != "" && settings.RuntimeOverrides != nil {
+				if override := settings.RuntimeOverrides[role]; override != nil {
+					base = mergeRuntimeConfigs(base, override)
+				}
+			}
+		}
 	}
-	if settings.Runtime == nil {
-		return DefaultRuntimeConfig()
-	}
-	// Fill in defaults for empty fields
-	rc := settings.Runtime
-	if rc.Command == "" {
-		rc.Command = "claude"
-	}
-	if rc.Args == nil {
-		rc.Args = []string{"--dangerously-skip-permissions"}
-	}
-	return rc
+	return normalizeRuntimeConfig(base)
 }
 
 // GetRuntimeCommand is a convenience function that returns the full command string
@@ -730,32 +734,21 @@ func GetRuntimeCommandWithPrompt(rigPath, prompt string) string {
 // rigPath is optional - if empty, uses defaults.
 // prompt is optional - if provided, appended as the initial prompt.
 func BuildStartupCommand(envVars map[string]string, rigPath, prompt string) string {
-	var rc *RuntimeConfig
-	if rigPath != "" {
-		rc = LoadRuntimeConfig(rigPath)
-	} else {
-		rc = DefaultRuntimeConfig()
+	rc := resolveRuntimeConfig(envVars, rigPath)
+	opts := llm.LaunchOptions{
+		Env:      envVars,
+		Prompt:   prompt,
+		RigPath:  rigPath,
+		Runtime:  runtimeSettingsFromConfig(rc),
+		Provider: rc.Provider,
 	}
+	opts.Role = envVars["GT_ROLE"]
+	opts.RigName = envVars["GT_RIG"]
+	opts.Actor = envVars["BD_ACTOR"]
 
-	// Build environment export prefix
-	var exports []string
-	for k, v := range envVars {
-		exports = append(exports, fmt.Sprintf("%s=%s", k, v))
-	}
-
-	// Sort for deterministic output
-	sort.Strings(exports)
-
-	var cmd string
-	if len(exports) > 0 {
-		cmd = "export " + strings.Join(exports, " ") + " && "
-	}
-
-	// Add runtime command
-	if prompt != "" {
-		cmd += rc.BuildCommandWithPrompt(prompt)
-	} else {
-		cmd += rc.BuildCommand()
+	cmd, err := llm.BuildLaunchCommand(opts)
+	if err != nil {
+		return legacyStartupCommand(envVars, rc, prompt)
 	}
 
 	return cmd
@@ -799,4 +792,154 @@ func BuildCrewStartupCommand(rigName, crewName, rigPath, prompt string) string {
 		"GIT_AUTHOR_NAME": crewName,
 	}
 	return BuildStartupCommand(envVars, rigPath, prompt)
+}
+
+func resolveRuntimeConfig(envVars map[string]string, rigPath string) *RuntimeConfig {
+	role := envVars["GT_ROLE"]
+	rc := loadRuntimeConfigForRole(rigPath, role)
+	if override := providerOverride(); override != "" && override != rc.Provider {
+		isDefault := isDefaultRuntimeSpec(rc)
+		rc.Provider = override
+		if isDefault {
+			command, args := defaultLaunchSpec(override)
+			rc.Command = command
+			rc.Args = append([]string{}, args...)
+		}
+	}
+	return rc
+}
+
+func runtimeSettingsFromConfig(rc *RuntimeConfig) llm.RuntimeSettings {
+	if rc == nil {
+		return llm.RuntimeSettings{}
+	}
+	settings := llm.RuntimeSettings{
+		Command:       rc.Command,
+		InitialPrompt: rc.InitialPrompt,
+	}
+	if rc.Args != nil {
+		settings.Args = append([]string{}, rc.Args...)
+	}
+	settings.Model = rc.Model
+	return settings
+}
+
+func legacyStartupCommand(envVars map[string]string, rc *RuntimeConfig, prompt string) string {
+	var exports []string
+	for k, v := range envVars {
+		exports = append(exports, fmt.Sprintf("%s=%s", k, v))
+	}
+	sort.Strings(exports)
+
+	runtimePart := rc.BuildCommand()
+	if prompt != "" {
+		runtimePart = rc.BuildCommandWithPrompt(prompt)
+	}
+
+	if len(exports) == 0 {
+		return runtimePart
+	}
+
+	return "export " + strings.Join(exports, " ") + " && " + runtimePart
+}
+
+func providerOverride() string {
+	override := strings.TrimSpace(os.Getenv("GT_RUNTIME_PROVIDER"))
+	if override == "" {
+		return ""
+	}
+	return strings.ToLower(override)
+}
+
+func defaultLaunchSpec(provider string) (string, []string) {
+	switch provider {
+	case "openhands":
+		return "openhands", []string{"--exp"}
+	default:
+		return "claude", []string{"--dangerously-skip-permissions"}
+	}
+}
+
+func mergeRuntimeConfigs(dst, src *RuntimeConfig) *RuntimeConfig {
+	if dst == nil {
+		dst = &RuntimeConfig{}
+	}
+	if src == nil {
+		return dst
+	}
+	if src.Command != "" {
+		dst.Command = src.Command
+	}
+	if src.Args != nil {
+		dst.Args = append([]string{}, src.Args...)
+	}
+	if src.InitialPrompt != "" {
+		dst.InitialPrompt = src.InitialPrompt
+	}
+	if src.Provider != "" {
+		dst.Provider = strings.ToLower(src.Provider)
+	}
+	if src.Model != "" {
+		dst.Model = src.Model
+	}
+	return dst
+}
+
+func normalizeRuntimeConfig(rc *RuntimeConfig) *RuntimeConfig {
+	if rc == nil {
+		rc = &RuntimeConfig{}
+	}
+	defaultProvider := canonicalProviderName(DefaultRuntimeConfig().Command)
+	canonical := canonicalProviderName(rc.Command)
+	if rc.Provider == "" {
+		if canonical != "" {
+			rc.Provider = canonical
+		} else {
+			rc.Provider = defaultProvider
+		}
+	} else {
+		rc.Provider = strings.ToLower(rc.Provider)
+		if rc.Provider == defaultProvider && canonical != "" && canonical != defaultProvider {
+			rc.Provider = canonical
+		}
+	}
+	defaultCmd, defaultArgs := defaultLaunchSpec(rc.Provider)
+	if rc.Command == "" {
+		rc.Command = defaultCmd
+	}
+	if rc.Args == nil {
+		rc.Args = append([]string{}, defaultArgs...)
+	}
+	return rc
+}
+
+func canonicalProviderName(command string) string {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
+		return ""
+	}
+	return strings.ToLower(filepath.Base(trimmed))
+}
+
+func isDefaultRuntimeSpec(rc *RuntimeConfig) bool {
+	if rc == nil {
+		return true
+	}
+	provider := rc.Provider
+	if provider == "" {
+		provider = canonicalProviderName(rc.Command)
+	}
+	cmd, args := defaultLaunchSpec(provider)
+	if rc.Command != cmd {
+		return false
+	}
+	if len(rc.Args) != len(args) {
+		return false
+	}
+	for i := range args {
+		if rc.Args[i] != args[i] {
+			return false
+		}
+	}
+	return true
 }

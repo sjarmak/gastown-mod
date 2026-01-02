@@ -66,7 +66,7 @@ type BeadsConfig struct {
 
 // AgentState represents an agent's current state (*/state.json).
 type AgentState struct {
-	Role       string         `json:"role"`              // "mayor", "witness", etc.
+	Role       string         `json:"role"` // "mayor", "witness", etc.
 	LastActive time.Time      `json:"last_active"`
 	Session    string         `json:"session,omitempty"`
 	Extra      map[string]any `json:"extra,omitempty"`
@@ -105,6 +105,8 @@ type RigSettings struct {
 	Namepool   *NamepoolConfig   `json:"namepool,omitempty"`    // polecat name pool settings
 	Crew       *CrewConfig       `json:"crew,omitempty"`        // crew startup settings
 	Runtime    *RuntimeConfig    `json:"runtime,omitempty"`     // LLM runtime settings
+	// RuntimeOverrides customize runtime behavior per role (keyed by GT_ROLE)
+	RuntimeOverrides map[string]*RuntimeConfig `json:"runtime_overrides,omitempty"`
 }
 
 // CrewConfig represents crew workspace settings for a rig.
@@ -137,13 +139,21 @@ type RuntimeConfig struct {
 	// For claude, this is passed as the prompt argument.
 	// Empty by default (hooks handle context).
 	InitialPrompt string `json:"initial_prompt,omitempty"`
+
+	// Provider identifies the adapter/provider to use (claude, openhands, etc.).
+	// Defaults to the canonical form of Command.
+	Provider string `json:"provider,omitempty"`
+
+	// Model hints the desired LLM model identifier for providers that support it.
+	Model string `json:"model,omitempty"`
 }
 
 // DefaultRuntimeConfig returns a RuntimeConfig with sensible defaults.
 func DefaultRuntimeConfig() *RuntimeConfig {
 	return &RuntimeConfig{
-		Command: "claude",
-		Args:    []string{"--dangerously-skip-permissions"},
+		Command:  "claude",
+		Args:     []string{"--dangerously-skip-permissions"},
+		Provider: "claude",
 	}
 }
 
@@ -231,8 +241,8 @@ type TownThemeConfig struct {
 // These are used when no explicit configuration is provided.
 func BuiltinRoleThemes() map[string]string {
 	return map[string]string{
-		"witness":  "rust",  // Red/rust - watchful, alert
-		"refinery": "plum",  // Purple - processing, refining
+		"witness":  "rust", // Red/rust - watchful, alert
+		"refinery": "plum", // Purple - processing, refining
 		// crew and polecat use rig theme by default (no override)
 	}
 }

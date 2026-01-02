@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/steveyegge/gastown/internal/llm"
 )
 
 func TestTownConfigRoundTrip(t *testing.T) {
@@ -812,6 +814,9 @@ func TestRuntimeConfigDefaults(t *testing.T) {
 	if len(rc.Args) != 1 || rc.Args[0] != "--dangerously-skip-permissions" {
 		t.Errorf("Args = %v, want [--dangerously-skip-permissions]", rc.Args)
 	}
+	if rc.Provider != "claude" {
+		t.Errorf("Provider = %q, want claude", rc.Provider)
+	}
 }
 
 func TestRuntimeConfigBuildCommand(t *testing.T) {
@@ -959,6 +964,77 @@ func TestBuildCrewStartupCommand(t *testing.T) {
 	}
 }
 
+func TestBuildStartupCommandUsesRoleOverride(t *testing.T) {
+	root := t.TempDir()
+	settingsDir := filepath.Join(root, "settings")
+	if err := os.MkdirAll(settingsDir, 0755); err != nil {
+		t.Fatalf("creating settings dir: %v", err)
+	}
+	settings := NewRigSettings()
+	settings.Runtime = &RuntimeConfig{}
+	settings.RuntimeOverrides = map[string]*RuntimeConfig{
+		"polecat": {
+			Command:  "openhands",
+			Provider: "openhands",
+			Args:     []string{"--exp"},
+		},
+	}
+	if err := SaveRigSettings(filepath.Join(settingsDir, "config.json"), settings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	cmd := BuildPolecatStartupCommand("gastown", "toast", root, "")
+	if !strings.Contains(cmd, "openhands") {
+		t.Fatalf("expected openhands command, got %q", cmd)
+	}
+}
+
+func TestBuildStartupCommandProviderEnvOverride(t *testing.T) {
+	t.Setenv("GT_RUNTIME_PROVIDER", "openhands")
+	cmd := BuildAgentStartupCommand("witness", "gastown/witness", "", "")
+	if !strings.Contains(cmd, "openhands") {
+		t.Fatalf("expected openhands command with env override, got %q", cmd)
+	}
+}
+
+type adapterRecorder struct {
+	response string
+	last     llm.LaunchOptions
+}
+
+func (a *adapterRecorder) BuildLaunchCommand(opts llm.LaunchOptions) (string, error) {
+	a.last = opts
+	return a.response, nil
+}
+
+func TestBuildStartupCommandUsesAdapterFromRuntimeConfig(t *testing.T) {
+	adapter := &adapterRecorder{response: "adapter-response"}
+	llm.RegisterAdapter("adapter-cli", adapter)
+	t.Cleanup(func() {
+		llm.RegisterAdapter("adapter-cli", nil)
+	})
+
+	rigDir := t.TempDir()
+	settings := NewRigSettings()
+	settings.Runtime = &RuntimeConfig{Command: "adapter-cli"}
+	if err := SaveRigSettings(filepath.Join(rigDir, "settings", "config.json"), settings); err != nil {
+		t.Fatalf("SaveRigSettings: %v", err)
+	}
+
+	env := map[string]string{"GT_ROLE": "witness"}
+	cmd := BuildStartupCommand(env, rigDir, "gt prime")
+	if cmd != "adapter-response" {
+		t.Fatalf("expected adapter response, got %q", cmd)
+	}
+
+	if adapter.last.Env["GT_ROLE"] != "witness" {
+		t.Fatalf("adapter did not receive env vars: %v", adapter.last.Env)
+	}
+	if adapter.last.Prompt != "gt prime" {
+		t.Fatalf("expected prompt to be forwarded, got %q", adapter.last.Prompt)
+	}
+}
+
 func TestLoadRuntimeConfigFromSettings(t *testing.T) {
 	// Create temp rig with custom runtime config
 	dir := t.TempDir()
@@ -996,5 +1072,38 @@ func TestLoadRuntimeConfigFallsBackToDefaults(t *testing.T) {
 	rc := LoadRuntimeConfig("/nonexistent/path")
 	if rc.Command != "claude" {
 		t.Errorf("Command = %q, want %q (default)", rc.Command, "claude")
+	}
+}
+
+func TestLoadRuntimeConfigPrefersProviderField(t *testing.T) {
+	dir := t.TempDir()
+	settingsDir := filepath.Join(dir, "settings")
+	if err := os.MkdirAll(settingsDir, 0755); err != nil {
+		t.Fatalf("creating settings dir: %v", err)
+	}
+	settings := NewRigSettings()
+	settings.Runtime = &RuntimeConfig{
+		Command:  "/usr/local/bin/openhands",
+		Args:     []string{"--exp"},
+		Provider: "OpenHands",
+		Model:    "test-model",
+	}
+	if err := SaveRigSettings(filepath.Join(settingsDir, "config.json"), settings); err != nil {
+		t.Fatalf("saving settings: %v", err)
+	}
+	rc := LoadRuntimeConfig(dir)
+	if rc.Provider != "openhands" {
+		t.Fatalf("provider = %q, want openhands", rc.Provider)
+	}
+	if rc.Model != "test-model" {
+		t.Fatalf("model = %q, want test-model", rc.Model)
+	}
+}
+
+func TestRuntimeSettingsFromConfigCopiesModel(t *testing.T) {
+	rc := &RuntimeConfig{Command: "openhands", Model: "gpt"}
+	settings := runtimeSettingsFromConfig(rc)
+	if settings.Model != "gpt" {
+		t.Fatalf("expected model propagated, got %q", settings.Model)
 	}
 }

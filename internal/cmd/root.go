@@ -3,9 +3,14 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
+)
+
+var (
+	runtimeProviderOverride string
 )
 
 var rootCmd = &cobra.Command{
@@ -46,6 +51,7 @@ const (
 func init() {
 	// Enable prefix matching for subcommands (e.g., "gt ref at" -> "gt refinery attach")
 	cobra.EnablePrefixMatching = true
+	cobra.OnInitialize(applyRuntimeProviderOverride)
 
 	// Define command groups (order determines help output order)
 	rootCmd.AddGroup(
@@ -63,7 +69,7 @@ func init() {
 	rootCmd.SetCompletionCommandGroupID(GroupConfig)
 
 	// Global flags can be added here
-	// rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file")
+	rootCmd.PersistentFlags().StringVar(&runtimeProviderOverride, "runtime-provider", "", "Override the active LLM provider (claude, openhands, ...)")
 }
 
 // buildCommandPath walks the command hierarchy to build the full command path.
@@ -85,4 +91,11 @@ func requireSubcommand(cmd *cobra.Command, args []string) error {
 	}
 	return fmt.Errorf("unknown command %q for %q\n\nRun '%s --help' for available commands",
 		args[0], buildCommandPath(cmd), buildCommandPath(cmd))
+}
+
+func applyRuntimeProviderOverride() {
+	if runtimeProviderOverride == "" {
+		return
+	}
+	_ = os.Setenv("GT_RUNTIME_PROVIDER", runtimeProviderOverride)
 }
