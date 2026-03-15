@@ -380,6 +380,7 @@ func init() {
 		cmd.Flags().IntVar(&reaperPort, "port", 3307, "Dolt server port")
 		cmd.Flags().BoolVar(&reaperDryRun, "dry-run", false, "Report what would happen without acting")
 	}
+	reaperDatabasesCmd.Flags().IntVar(&reaperPort, "port", 3307, "Dolt server port")
 
 	// JSON output flag for single-db commands
 	for _, cmd := range []*cobra.Command{reaperScanCmd, reaperReapCmd, reaperPurgeCmd, reaperAutoCloseCmd, reaperDatabasesCmd} {
