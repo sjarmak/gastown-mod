@@ -512,6 +512,12 @@ func (d *Daemon) getStartCommand(roleConfig *beads.RoleConfig, parsed *ParsedIde
 	if runtimeConfig.Session != nil && runtimeConfig.Session.SessionIDEnv != "" {
 		defaultEnv["GT_SESSION_ID_ENV"] = runtimeConfig.Session.SessionIDEnv
 	}
+	// Merge agent-specific env vars (e.g., CLAUDE_CONFIG_DIR for account selection).
+	// Without this, non-polecat/crew roles (witness, refinery, deacon, mayor) miss
+	// env vars defined in the agent config's "env" block. (GH#2601)
+	for k, v := range runtimeConfig.Env {
+		defaultEnv[k] = v
+	}
 	config.SanitizeAgentEnv(defaultEnv, map[string]string{})
 	defaultCmd := config.PrependEnv("exec "+runtimeConfig.BuildCommandWithPrompt(prompt), defaultEnv)
 
