@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gas Town RTS</title>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0d1117;
+  color: #c9d1d9;
+  font-family: 'SF Mono', Monaco, 'Consolas', 'Courier New', monospace;
+  overflow: hidden;
+}
+
+/* ─── HUD (HTML overlay) ─── */
+#hud {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 200;
+  background: linear-gradient(180deg, #0d1117ee 0%, #0d111700 100%);
+  padding: 12px 20px 28px;
+  pointer-events: none;
+}
+#hud .title { color: #ff6b35; font-size: 18px; font-weight: bold; letter-spacing: 3px; }
+#hud .stats { margin-top: 6px; font-size: 13px; color: #8b949e; }
+#hud .stat { margin-right: 18px; }
+#hud .val { color: #ff6b35; font-weight: bold; }
+#hud .alert { color: #f85149; }
+
+/* ─── Connection ─── */
+#connection-status {
+  position: fixed; top: 12px; right: 20px; z-index: 200;
+  font-size: 12px; padding: 4px 10px; border-radius: 4px;
+}
+.connected { background: #1a3a1a; color: #3fb950; border: 1px solid #238636; }
+.disconnected { background: #3a1a1a; color: #f85149; border: 1px solid #da3633; }
+
+/* ─── Detail Panel (HTML overlay) ─── */
+#detail-panel {
+  position: fixed;
+  right: 20px;
+  top: 72px;
+  width: 380px;
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  padding: 20px;
+  z-index: 300;
+  display: none;
+  box-shadow: 0 8px 24px #010409aa;
+}
+#detail-panel.visible { display: block; pointer-events: auto; }
+#detail-panel .detail-header {
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 16px; padding-bottom: 12px;
+  border-bottom: 1px solid #21262d;
+}
+#detail-panel .detail-sprite {
+  width: 48px; height: 48px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 28px;
+}
+#detail-panel .detail-title { flex: 1; }
+#detail-panel .detail-title h3 { font-size: 15px; color: #c9d1d9; margin: 0; }
+#detail-panel .detail-role {
+  font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 1px;
+}
+#detail-panel .detail-close {
+  cursor: pointer; color: #8b949e; font-size: 20px;
+  background: none; border: none; padding: 4px 8px;
+}
+#detail-panel .detail-close:hover { color: #c9d1d9; }
+.detail-row {
+  display: flex; justify-content: space-between; padding: 6px 0;
+  font-size: 13px; border-bottom: 1px solid #21262d22;
+}
+.detail-row .label { color: #8b949e; min-width: 90px; }
+.detail-row .value { color: #c9d1d9; text-align: right; max-width: 240px; word-break: break-word; }
+.detail-section {
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid #21262d;
+}
+.detail-section h4 {
+  font-size: 12px; color: #8b949e; text-transform: uppercase;
+  letter-spacing: 1px; margin-bottom: 8px;
+}
+
+/* ─── Legend ─── */
+#legend {
+  position: fixed; bottom: 12px; left: 20px; z-index: 200;
+  font-size: 12px; color: #8b949e;
+  display: flex; gap: 14px;
+  background: #0d1117cc;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid #21262d;
+  pointer-events: none;
+}
+#legend .entry { display: flex; align-items: center; gap: 5px; }
+#legend .swatch { width: 12px; height: 12px; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <div class="title">GAS TOWN</div>
+  <div class="stats" id="hud-stats"></div>
+</div>
+<div id="connection-status" class="disconnected">OFFLINE</div>
+
+<div id="detail-panel">
+  <div class="detail-header">
+    <div class="detail-sprite" id="detail-sprite"></div>
+    <div class="detail-title">
+      <h3 id="detail-name"></h3>
+      <div class="detail-role" id="detail-role"></div>
+    </div>
+    <button class="detail-close" onclick="closeDetail()">&times;</button>
+  </div>
+  <div id="detail-body"></div>
+</div>
+
+<div id="legend">
+  <span class="entry"><span class="swatch" style="background:#ff6b35"></span>Polecat</span>
+  <span class="entry"><span class="swatch" style="background:#4ade80"></span>Witness</span>
+  <span class="entry"><span class="swatch" style="background:#e879f9"></span>Refinery</span>
+  <span class="entry"><span class="swatch" style="background:#fbbf24"></span>Mayor</span>
+  <span class="entry"><span class="swatch" style="background:#06b6d4"></span>Deacon</span>
+  <span class="entry"><span class="swatch" style="background:#94a3b8"></span>Dog</span>
+</div>
+
+<script>
+// ─── Config ───
+const ROLE_COLORS = {
+  polecat:  0xff6b35, witness: 0x4ade80, refinery: 0xe879f9,
+  mayor:    0xfbbf24, deacon:  0x06b6d4, dog:      0x94a3b8, crew: 0xff6b35,
+};
+const ROLE_COLORS_CSS = {
+  polecat: '#ff6b35', witness: '#4ade80', refinery: '#e879f9',
+  mayor: '#fbbf24', deacon: '#06b6d4', dog: '#94a3b8', crew: '#ff6b35',
+};
+const ROLE_ICONS = {
+  polecat: '\u{1F431}', witness: '\u{1F989}', refinery: '\u{1F3ED}',
+  mayor: '\u{1F3A9}', deacon: '\u{1F43A}', dog: '\u{1F415}', crew: '\u{1F477}',
+};
+const STATUS_COLORS = {
+  working: 0x3fb950, idle: 0x6e7681, stuck: 0xf85149,
+  stale: 0xd29922, dead: 0x484f58, escalated: 0xf85149,
+};
+const SPRITE_SIZE = 36;
+const RIG_PADDING = 40;
+const RIG_GAP = 60;
+
+let gameState = null;
+let selectedEntityId = null;
+let game = null;
+
+// ─── Phaser Scene ───
+class RTSScene extends Phaser.Scene {
+  constructor() {
+    super({ key: 'RTSScene' });
+    this.sprites = {};       // entityId -> sprite group
+    this.rigZones = {};      // rigName -> graphics rect
+    this.rigLabels = {};     // rigName -> text
+    this.rigPositions = {};  // rigName -> {x, y, w, h}
+    this.particles = [];     // active comm event particles
+    this.initialized = false;
+  }
+
+  create() {
+    this.cameras.main.setBackgroundColor('#0d1117');
+
+    // Enable camera drag
+    this.input.on('pointermove', (pointer) => {
+      if (pointer.isDown && !pointer.wasDraggingSprite) {
+        this.cameras.main.scrollX -= (pointer.x - pointer.prevPosition.x) / this.cameras.main.zoom;
+        this.cameras.main.scrollY -= (pointer.y - pointer.prevPosition.y) / this.cameras.main.zoom;
+      }
+    });
+
+    // Zoom with scroll wheel
+    this.input.on('wheel', (pointer, gameObjects, deltaX, deltaY) => {
+      const newZoom = Phaser.Math.Clamp(this.cameras.main.zoom - deltaY * 0.001, 0.3, 3);
+      this.cameras.main.setZoom(newZoom);
+    });
+
+    // Click background to deselect
+    this.input.on('pointerdown', (pointer) => {
+      pointer.wasDraggingSprite = false;
+    });
+    this.input.on('pointerup', (pointer) => {
+      if (!pointer.wasDraggingSprite) {
+        // Check if we clicked on empty space (no sprite)
+        const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+        let hitSprite = false;
+        for (const id in this.sprites) {
+          const s = this.sprites[id];
+          if (s.body && s.body.getBounds().contains(worldPoint.x, worldPoint.y)) {
+            hitSprite = true;
+            break;
+          }
+        }
+        if (!hitSprite) {
+          // Deselect only if we didn't drag
+          const dx = Math.abs(pointer.x - pointer.downX);
+          const dy = Math.abs(pointer.y - pointer.downY);
+          if (dx < 5 && dy < 5) {
+            closeDetail();
+          }
+        }
+      }
+    });
+
+    this.initialized = true;
+    if (gameState) this.updateWorld(gameState);
+  }
+
+  // ─── Layout calculation ───
+  computeLayout(state) {
+    const rigs = (state.rigs || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+    const entities = state.entities || [];
+
+    // Group entities by rig
+    const byRig = {};
+    const hqEntities = [];
+    for (const e of entities) {
+      if (e.type === 'mayor' || e.type === 'deacon' || !e.rig) {
+        hqEntities.push(e);
+      } else {
+        if (!byRig[e.rig]) byRig[e.rig] = [];
+        byRig[e.rig].push(e);
+      }
+    }
+
+    // Town Hall position (top center)
+    const thW = 200, thH = 120;
+    const thX = 1400, thY = 100;
+    this.rigPositions['__townhall'] = { x: thX, y: thY, w: thW, h: thH, entities: hqEntities };
+
+    // Calculate rig zone sizes based on entity count
+    const rigSizes = [];
+    for (const rig of rigs) {
+      const count = (byRig[rig.name] || []).length;
+      const cols = Math.max(2, Math.ceil(Math.sqrt(count + 1)));
+      const rows = Math.max(2, Math.ceil((count + 1) / cols));
+      const w = cols * (SPRITE_SIZE + 40) + RIG_PADDING * 2 + 60;
+      const h = rows * (SPRITE_SIZE + 50) + RIG_PADDING * 2 + 40;
+      rigSizes.push({ name: rig.name, w: Math.max(300, w), h: Math.max(180, h), entities: byRig[rig.name] || [] });
+    }
+
+    // Arrange rigs in rows below town hall
+    const maxRowWidth = 2800;
+    let curX = 100, curY = thY + thH + 100;
+    let rowHeight = 0;
+
+    for (const rs of rigSizes) {
+      if (curX + rs.w > maxRowWidth && curX > 100) {
+        curX = 100;
+        curY += rowHeight + RIG_GAP;
+        rowHeight = 0;
+      }
+      this.rigPositions[rs.name] = { x: curX, y: curY, w: rs.w, h: rs.h, entities: rs.entities };
+      curX += rs.w + RIG_GAP;
+      rowHeight = Math.max(rowHeight, rs.h);
+    }
+  }
+
+  // ─── Draw rig zones ───
+  drawRigZones() {
+    // Clear old zone graphics
+    for (const name in this.rigZones) {
+      this.rigZones[name].destroy();
+      if (this.rigLabels[name]) this.rigLabels[name].destroy();
+    }
+    this.rigZones = {};
+    this.rigLabels = {};
+
+    for (const name in this.rigPositions) {
+      const pos = this.rigPositions[name];
+      const g = this.add.graphics();
+
+      if (name === '__townhall') {
+        // Town Hall: gold border
+        g.lineStyle(2, 0xfbbf24, 0.4);
+        g.fillStyle(0xfbbf24, 0.05);
+        g.strokeRoundedRect(pos.x, pos.y, pos.w, pos.h, 12);
+        g.fillRoundedRect(pos.x, pos.y, pos.w, pos.h, 12);
+
+        const label = this.add.text(pos.x + pos.w / 2, pos.y + 14, 'TOWN HALL', {
+          fontSize: '13px', fontFamily: 'monospace', color: '#fbbf24',
+          fontStyle: 'bold', align: 'center'
+        }).setOrigin(0.5, 0);
+        this.rigLabels[name] = label;
+      } else {
+        // Regular rig: subtle border
+        g.lineStyle(1, 0x30363d, 0.8);
+        g.fillStyle(0x161b22, 0.25);
+        g.strokeRoundedRect(pos.x, pos.y, pos.w, pos.h, 12);
+        g.fillRoundedRect(pos.x, pos.y, pos.w, pos.h, 12);
+
+        const label = this.add.text(pos.x + 16, pos.y + 12, name.toUpperCase(), {
+          fontSize: '13px', fontFamily: 'monospace', color: '#8b949e',
+          fontStyle: 'bold', letterSpacing: 2
+        });
+        this.rigLabels[name] = label;
+      }
+      this.rigZones[name] = g;
+    }
+  }
+
+  // ─── Create/update entity sprites ───
+  updateEntities() {
+    const seenIds = new Set();
+
+    for (const rigName in this.rigPositions) {
+      const pos = this.rigPositions[rigName];
+      const entities = pos.entities || [];
+      const startX = pos.x + RIG_PADDING + 30;
+      const startY = pos.y + (rigName === '__townhall' ? 40 : 44);
+      const cols = Math.max(2, Math.ceil(Math.sqrt(entities.length + 1)));
+
+      entities.forEach((entity, idx) => {
+        seenIds.add(entity.id);
+        const col = idx % cols;
+        const row = Math.floor(idx / cols);
+        const targetX = startX + col * (SPRITE_SIZE + 40);
+        const targetY = startY + row * (SPRITE_SIZE + 50);
+
+        if (this.sprites[entity.id]) {
+          // Update existing sprite
+          this.updateSprite(entity, targetX, targetY);
+        } else {
+          // Create new sprite
+          this.createSprite(entity, targetX, targetY);
+        }
+      });
+    }
+
+    // Remove sprites for entities that no longer exist
+    for (const id in this.sprites) {
+      if (!seenIds.has(id)) {
+        this.destroySprite(id);
+      }
+    }
+  }
+
+  createSprite(entity, x, y) {
+    const color = ROLE_COLORS[entity.type] || 0x8b949e;
+    const container = this.add.container(x, y);
+
+    // Body rectangle
+    const body = this.add.graphics();
+    body.fillStyle(color, 0.15);
+    body.lineStyle(2, color, 0.6);
+    body.strokeRoundedRect(-SPRITE_SIZE/2, -SPRITE_SIZE/2, SPRITE_SIZE, SPRITE_SIZE, 8);
+    body.fillRoundedRect(-SPRITE_SIZE/2, -SPRITE_SIZE/2, SPRITE_SIZE, SPRITE_SIZE, 8);
+
+    // Eyes (two white dots with pupils)
+    const eyeY = -4;
+    const eyeSpacing = 7;
+    // Left eye
+    body.fillStyle(0xffffff, 0.9);
+    body.fillCircle(-eyeSpacing, eyeY, 4);
+    body.fillStyle(0x000000, 1);
+    body.fillCircle(-eyeSpacing + 1, eyeY, 2);
+    // Right eye
+    body.fillStyle(0xffffff, 0.9);
+    body.fillCircle(eyeSpacing, eyeY, 4);
+    body.fillStyle(0x000000, 1);
+    body.fillCircle(eyeSpacing + 1, eyeY, 2);
+
+    container.add(body);
+
+    // Status dot
+    const statusColor = STATUS_COLORS[entity.status] || 0x6e7681;
+    const statusDot = this.add.graphics();
+    statusDot.fillStyle(statusColor, 1);
+    statusDot.fillCircle(SPRITE_SIZE/2 - 2, -SPRITE_SIZE/2 + 2, 5);
+    container.add(statusDot);
+
+    // Name label
+    const displayName = entity.name || entity.id;
+    const shortName = displayName.length > 12 ? displayName.substring(0, 10) + '..' : displayName;
+    const nameText = this.add.text(0, SPRITE_SIZE/2 + 6, shortName, {
+      fontSize: '11px', fontFamily: 'monospace', color: '#c9d1d9',
+      fontStyle: 'bold', align: 'center'
+    }).setOrigin(0.5, 0);
+    container.add(nameText);
+
+    // Role label
+    const roleText = this.add.text(0, SPRITE_SIZE/2 + 20, entity.type, {
+      fontSize: '9px', fontFamily: 'monospace', color: '#8b949e',
+      align: 'center'
+    }).setOrigin(0.5, 0);
+    container.add(roleText);
+
+    // Speech bubble (activity hint)
+    let speech = entity.hookTitle || entity.activity || '';
+    if (speech.length > 30) speech = speech.substring(0, 27) + '...';
+    let speechText = null;
+    if (speech) {
+      speechText = this.add.text(0, SPRITE_SIZE/2 + 34, speech, {
+        fontSize: '8px', fontFamily: 'monospace', color: '#8b949e',
+        align: 'center', backgroundColor: '#1c2128',
+        padding: { x: 4, y: 2 }
+      }).setOrigin(0.5, 0);
+      container.add(speechText);
+    }
+
+    // Make interactive
+    const hitArea = new Phaser.Geom.Rectangle(
+      -SPRITE_SIZE/2 - 10, -SPRITE_SIZE/2 - 5,
+      SPRITE_SIZE + 20, SPRITE_SIZE + 60
+    );
+    container.setSize(SPRITE_SIZE + 20, SPRITE_SIZE + 60);
+    container.setInteractive(hitArea, Phaser.Geom.Rectangle.Contains);
+    container.on('pointerdown', (pointer) => {
+      pointer.wasDraggingSprite = true;
+      selectEntity(entity.id);
+    });
+
+    // Wander animation for working entities
+    if (entity.status === 'working' || entity.sessionAlive) {
+      const delay = stableHash(entity.id) % 3000;
+      this.tweens.add({
+        targets: container,
+        x: { value: x + Phaser.Math.Between(-8, 8), duration: 3000 + delay },
+        y: { value: y + Phaser.Math.Between(-5, 5), duration: 4000 + delay },
+        ease: 'Sine.easeInOut',
+        yoyo: true,
+        repeat: -1,
+        delay: delay
+      });
+    } else {
+      // Idle bob
+      this.tweens.add({
+        targets: container,
+        y: { value: y + 3, duration: 2000 },
+        ease: 'Sine.easeInOut',
+        yoyo: true,
+        repeat: -1
+      });
+    }
+
+    // Highlight if selected
+    if (entity.id === selectedEntityId) {
+      body.lineStyle(2, 0xff6b35, 1);
+      body.strokeRoundedRect(-SPRITE_SIZE/2 - 2, -SPRITE_SIZE/2 - 2, SPRITE_SIZE + 4, SPRITE_SIZE + 4, 10);
+    }
+
+    this.sprites[entity.id] = {
+      container, body, statusDot, nameText, roleText, speechText,
+      entity, targetX: x, targetY: y
+    };
+  }
+
+  updateSprite(entity, targetX, targetY) {
+    const s = this.sprites[entity.id];
+    if (!s) return;
+
+    s.entity = entity;
+
+    // Update status dot color
+    const statusColor = STATUS_COLORS[entity.status] || 0x6e7681;
+    s.statusDot.clear();
+    s.statusDot.fillStyle(statusColor, 1);
+    s.statusDot.fillCircle(SPRITE_SIZE/2 - 2, -SPRITE_SIZE/2 + 2, 5);
+
+    // Pulse stuck/escalated status
+    if (entity.status === 'stuck' || entity.status === 'escalated') {
+      if (!s.pulseTween) {
+        s.pulseTween = this.tweens.add({
+          targets: s.statusDot,
+          alpha: { from: 1, to: 0.3 },
+          duration: 500,
+          yoyo: true,
+          repeat: -1
+        });
+      }
+    } else if (s.pulseTween) {
+      s.pulseTween.destroy();
+      s.pulseTween = null;
+      s.statusDot.alpha = 1;
+    }
+
+    // Update speech bubble
+    let speech = entity.hookTitle || entity.activity || '';
+    if (speech.length > 30) speech = speech.substring(0, 27) + '...';
+    if (s.speechText) {
+      if (speech) {
+        s.speechText.setText(speech);
+      } else {
+        s.speechText.setText('');
+      }
+    }
+  }
+
+  destroySprite(id) {
+    const s = this.sprites[id];
+    if (!s) return;
+    if (s.pulseTween) s.pulseTween.destroy();
+    s.container.destroy();
+    delete this.sprites[id];
+  }
+
+  // ─── Main update from SSE ───
+  updateWorld(state) {
+    if (!this.initialized) return;
+    this.computeLayout(state);
+    this.drawRigZones();
+    this.updateEntities();
+  }
+}
+
+// ─── Utility ───
+function stableHash(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h);
+}
+
+// ─── SSE Connection ───
+function connectSSE() {
+  const statusEl = document.getElementById('connection-status');
+  const source = new EventSource('/api/rts-state');
+
+  source.addEventListener('connected', () => {
+    statusEl.textContent = 'LIVE';
+    statusEl.className = 'connected';
+  });
+
+  source.addEventListener('state', (e) => {
+    try {
+      gameState = JSON.parse(e.data);
+      if (game && game.scene.getScene('RTSScene')) {
+        game.scene.getScene('RTSScene').updateWorld(gameState);
+      }
+      renderHUD(gameState);
+      if (selectedEntityId) updateDetailPanel();
+    } catch (err) {
+      console.error('Parse error:', err);
+    }
+  });
+
+  source.onerror = () => {
+    statusEl.textContent = 'RECONNECTING...';
+    statusEl.className = 'disconnected';
+  };
+}
+
+// ─── Detail Panel ───
+function selectEntity(id) {
+  selectedEntityId = id;
+  updateDetailPanel();
+}
+
+function updateDetailPanel() {
+  if (!gameState || !selectedEntityId) return;
+  const entity = (gameState.entities || []).find(e => e.id === selectedEntityId);
+  if (!entity) { closeDetail(); return; }
+
+  const panel = document.getElementById('detail-panel');
+  const color = ROLE_COLORS_CSS[entity.type] || '#8b949e';
+  const icon = ROLE_ICONS[entity.type] || '\u2753';
+
+  document.getElementById('detail-sprite').textContent = icon;
+  document.getElementById('detail-sprite').style.background = color + '22';
+  document.getElementById('detail-sprite').style.border = '2px solid ' + color + '66';
+  document.getElementById('detail-name').textContent = entity.name || entity.id;
+  document.getElementById('detail-role').textContent = entity.type;
+
+  let body = '';
+  const sc = entity.status === 'working' ? '#3fb950' : entity.status === 'stuck' ? '#f85149' : '#8b949e';
+  body += row('Status', '<span style="color:' + sc + '">' + (entity.status || 'unknown') + '</span>');
+  if (entity.rig) body += row('Rig', entity.rig);
+  body += row('Session', entity.sessionAlive ? '\u{1F7E2} alive' : '\u{1F534} dead');
+  if (entity.activityAge) body += row('Last Active', entity.activityAge);
+  if (entity.account) body += row('Account', entity.account);
+
+  if (entity.hookBead || entity.hookTitle || entity.activity) {
+    body += '<div class="detail-section"><h4>Current Work</h4>';
+    if (entity.hookBead) body += row('Bead', '<span style="color:#58a6ff">' + entity.hookBead + '</span>');
+    if (entity.hookTitle) body += row('Task', entity.hookTitle);
+    if (entity.activity) body += row('Activity', entity.activity);
+    body += '</div>';
+  }
+
+  document.getElementById('detail-body').innerHTML = body;
+  panel.classList.add('visible');
+}
+
+function row(label, value) {
+  return '<div class="detail-row"><span class="label">' + label + '</span><span class="value">' + value + '</span></div>';
+}
+
+function closeDetail() {
+  selectedEntityId = null;
+  document.getElementById('detail-panel').classList.remove('visible');
+}
+
+// ─── HUD ───
+function renderHUD(state) {
+  const el = document.getElementById('hud-stats');
+  if (!el) return;
+  const all = state.entities || [];
+  const active = all.filter(e => e.status === 'working' || e.sessionAlive).length;
+  const idle = all.filter(e => e.status === 'idle' || e.status === 'dead').length;
+  const stuck = all.filter(e => e.status === 'stuck' || e.status === 'escalated').length;
+  const rigs = (state.rigs || []).length;
+  const mq = (state.mergeQueue || []).length;
+  const esc = (state.escalations || []).length;
+  const types = {};
+  all.forEach(e => { types[e.type] = (types[e.type] || 0) + 1; });
+  const bd = Object.entries(types).map(([t, c]) => c + ' ' + t).join(' \u00b7 ');
+
+  let h = '<span class="stat">Agents: <span class="val">' + all.length + '</span> (' + bd + ')</span>';
+  h += '<span class="stat">Rigs: <span class="val">' + rigs + '</span></span>';
+  h += '<span class="stat">Active: <span class="val">' + active + '</span></span>';
+  h += '<span class="stat">Idle: <span class="val">' + idle + '</span></span>';
+  h += '<span class="stat">MQ: <span class="val">' + mq + '</span></span>';
+  if (stuck > 0) h += '<span class="stat alert">STUCK: ' + stuck + '</span>';
+  if (esc > 0) h += '<span class="stat alert">ESC: ' + esc + '</span>';
+  el.innerHTML = h;
+}
+
+// ─── Init ───
+document.addEventListener('DOMContentLoaded', () => {
+  game = new Phaser.Game({
+    type: Phaser.AUTO,
+    width: window.innerWidth,
+    height: window.innerHeight,
+    backgroundColor: '#0d1117',
+    parent: document.body,
+    scene: [RTSScene],
+    pixelArt: true,
+    render: { antialias: false, pixelArt: true },
+    scale: {
+      mode: Phaser.Scale.RESIZE,
+      autoCenter: Phaser.Scale.CENTER_BOTH,
+    },
+    input: { mouse: { preventDefaultWheel: true } },
+  });
+
+  // Center camera on town hall area after a short delay
+  setTimeout(() => {
+    const scene = game.scene.getScene('RTSScene');
+    if (scene && scene.cameras) {
+      scene.cameras.main.scrollX = 1100;
+      scene.cameras.main.scrollY = 0;
+    }
+  }, 500);
+
+  connectSSE();
+});
+
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDetail(); });
+</script>
+</body>
+</html>
